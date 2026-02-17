@@ -10,6 +10,7 @@
  * - Randomizes Douban API offsets so each page load shows different content
  * - Excludes already-watched titles
  * - Auto-infinite-scroll via useInfiniteScroll (no "load more" button)
+ * - When current queries exhaust, regenerates with new random offsets for more content
  * - Caches results for 30 minutes
  * - hasHistory = true when viewingHistory.length >= 2
  */
@@ -38,6 +39,7 @@ interface InterleavedMovie extends DoubanMovie {
 
 const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
 const ITEMS_PER_PAGE = 18; // How many to fetch per query per page
+const MAX_ROUNDS = 8; // Max times to regenerate queries before giving up
 
 export function usePersonalizedRecommendations(isPremium = false) {
   const normalHistory = useHistoryStore();
@@ -49,6 +51,8 @@ export function usePersonalizedRecommendations(isPremium = false) {
   const [hasMore, setHasMore] = useState(true);
   const [page, setPage] = useState(0);
   const queriesRef = useRef<RecommendationQuery[]>([]);
+  const roundRef = useRef(0); // Track how many times we've regenerated queries
+  const allSeenTitlesRef = useRef<Set<string>>(new Set()); // Global dedup across rounds
   const cacheRef = useRef<{
     key: string;
     movies: InterleavedMovie[];
@@ -99,6 +103,8 @@ export function usePersonalizedRecommendations(isPremium = false) {
 
     const queries = generateRecommendations(viewingHistory);
     queriesRef.current = queries;
+    roundRef.current = 0;
+    allSeenTitlesRef.current = new Set();
 
     if (queries.length === 0) {
       setMovies([]);
@@ -115,6 +121,10 @@ export function usePersonalizedRecommendations(isPremium = false) {
       Date.now() - cacheRef.current.timestamp < CACHE_DURATION
     ) {
       setMovies(cacheRef.current.movies);
+      // Rebuild seen titles from cache
+      for (const m of cacheRef.current.movies) {
+        allSeenTitlesRef.current.add(m.title.toLowerCase().trim());
+      }
       setHasMore(true);
       return;
     }
@@ -129,9 +139,13 @@ export function usePersonalizedRecommendations(isPremium = false) {
     fetchPage(queries, 0, watchedTitles).then((interleaved) => {
       if (cancelled) return;
       setMovies(interleaved);
-      setHasMore(interleaved.length >= queries.length * 2);
+      for (const m of interleaved) {
+        allSeenTitlesRef.current.add(m.title.toLowerCase().trim());
+      }
+      // Always assume there's more — we can regenerate queries if this round exhausts
+      setHasMore(interleaved.length > 0);
       cacheRef.current = {
-        key: cacheKey,
+        key: queries.map(q => `${q.tag}:${q.type}`).join('|'),
         movies: interleaved,
         timestamp: Date.now(),
       };
@@ -154,18 +168,47 @@ export function usePersonalizedRecommendations(isPremium = false) {
     try {
       const newMovies = await fetchPage(queries, nextPage, watchedTitles);
 
-      // Deduplicate against existing movies
-      const existingTitles = new Set(movies.map(m => m.title.toLowerCase().trim()));
+      // Deduplicate against all previously seen movies (across all rounds)
       const uniqueNew = newMovies.filter(
-        m => !existingTitles.has(m.title.toLowerCase().trim())
+        m => !allSeenTitlesRef.current.has(m.title.toLowerCase().trim())
       );
 
       if (uniqueNew.length === 0) {
-        setHasMore(false);
+        // Current queries exhausted — regenerate with new random offsets
+        if (roundRef.current < MAX_ROUNDS) {
+          roundRef.current += 1;
+          const freshQueries = generateRecommendations(viewingHistory);
+          queriesRef.current = freshQueries;
+
+          // Fetch page 0 with fresh random offsets
+          const freshMovies = await fetchPage(freshQueries, 0, watchedTitles);
+          const freshUnique = freshMovies.filter(
+            m => !allSeenTitlesRef.current.has(m.title.toLowerCase().trim())
+          );
+
+          if (freshUnique.length > 0) {
+            for (const m of freshUnique) {
+              allSeenTitlesRef.current.add(m.title.toLowerCase().trim());
+            }
+            setMovies((prev) => [...prev, ...freshUnique]);
+            setPage(0); // Reset page for fresh queries
+            if (cacheRef.current) {
+              cacheRef.current.movies = [...cacheRef.current.movies, ...freshUnique];
+            }
+          } else {
+            // Even fresh queries yielded nothing new — stop
+            setHasMore(false);
+          }
+        } else {
+          // Exceeded max rounds — stop
+          setHasMore(false);
+        }
       } else {
+        for (const m of uniqueNew) {
+          allSeenTitlesRef.current.add(m.title.toLowerCase().trim());
+        }
         setMovies((prev) => [...prev, ...uniqueNew]);
         setPage(nextPage);
-        // Update cache
         if (cacheRef.current) {
           cacheRef.current.movies = [...cacheRef.current.movies, ...uniqueNew];
         }
@@ -175,7 +218,7 @@ export function usePersonalizedRecommendations(isPremium = false) {
     } finally {
       setLoading(false);
     }
-  }, [loading, viewingHistory, movies, fetchPage]);
+  }, [loading, viewingHistory, fetchPage]);
 
   const { prefetchRef, loadMoreRef } = useInfiniteScroll({
     hasMore,

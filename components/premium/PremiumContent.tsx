@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { TagManager } from '@/components/home/TagManager';
 import { MovieGrid } from '@/components/home/MovieGrid';
 import { PremiumContentGrid } from './PremiumContentGrid';
@@ -40,6 +40,13 @@ export function PremiumContent({ onSearch }: PremiumContentProps) {
 
     // Track whether the recommendation tab is active
     const [isRecommendSelected, setIsRecommendSelected] = useState(hasHistory);
+
+    useEffect(() => {
+        if (hasHistory) {
+            setIsRecommendSelected(true);
+        }
+    }, [hasHistory]);
+
     const effectiveRecommendSelected = hasHistory && isRecommendSelected;
 
     // Get the category value from selected tag

@@ -6,7 +6,7 @@
 
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { TagManager } from './TagManager';
 import { MovieGrid } from './MovieGrid';
 import { useTagManager } from './hooks/useTagManager';
@@ -49,8 +49,15 @@ export function PopularFeatures({ onSearch }: PopularFeaturesProps) {
   // Track whether the recommendation tab is active
   const [isRecommendSelected, setIsRecommendSelected] = useState(hasHistory);
 
-  // Sync default selection when hasHistory changes
-  // (on first render, if hasHistory is true, recommendation tab is pre-selected)
+  // Sync selection when hasHistory changes after Zustand hydration from localStorage.
+  // On first render the store is empty (hasHistory=false), so useState captures false.
+  // Once hydration completes and hasHistory becomes true, auto-select the recommendation tab.
+  useEffect(() => {
+    if (hasHistory) {
+      setIsRecommendSelected(true);
+    }
+  }, [hasHistory]);
+
   const effectiveRecommendSelected = hasHistory && isRecommendSelected;
 
   const {
